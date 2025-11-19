@@ -7,6 +7,7 @@ from controllers.auth_controller import auth_bp
 from controllers.user_controller import user_bp
 from controllers.activity_controller import activity_bp
 from controllers.registration_controller import registration_bp
+from controllers.club_controller import club_bp
 
 def create_app():
     app = Flask(__name__)
@@ -20,6 +21,7 @@ def create_app():
     app.register_blueprint(user_bp, url_prefix='/v1')
     app.register_blueprint(activity_bp, url_prefix='/v1')
     app.register_blueprint(registration_bp, url_prefix='/v1')
+    app.register_blueprint(club_bp, url_prefix='/v1')
     
     # 统一错误处理
     @app.errorhandler(404)

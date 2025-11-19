@@ -397,6 +397,66 @@ class TestClubAPI(unittest.TestCase):
         
         print("   ✅ 完整业务流程测试通过")
 
+    def test_11_club_management(self):
+        """测试11: 社团管理功能（新增）"""
+        print("\n📊 测试11: 社团管理")
+        
+        # 1. 测试获取社团列表（无需认证，支持分类筛选）
+        print("   子测试1: 获取社团列表（分类筛选-科技）")
+        response = self.session.get(f"{BASE_URL}/clubs?page=1&limit=10&category=科技")
+        self.assertEqual(response.status_code, 200)
+        list_data = response.json()
+        self.assertEqual(list_data['code'], 200)
+        self.assertIn('clubs', list_data['data'])
+        self.assertIn('total', list_data['data'])
+        # 验证筛选结果：所有返回的社团分类都是"科技"
+        for club in list_data['data']['clubs']:
+            self.assertEqual(club['category'], '科技')
+        print(f"   ✅ 筛选科技类社团，获取到 {len(list_data['data']['clubs'])} 个")
+        
+        # 2. 测试创建社团（需认证）
+        print("   子测试2: 创建新社团")
+        auth_headers = self.get_auth_headers(user_id="club_creator_user")
+        club_data = {
+            "name": "测试社团-人工智能",
+            "description": "专注AI技术学习与交流",
+            "category": "科技",
+            "logo": "https://example.com/ai-club.png"
+        }
+        response = self.session.post(
+            f"{BASE_URL}/clubs",
+            headers=auth_headers,
+            data=json.dumps(club_data)
+        )
+        self.assertEqual(response.status_code, 201)
+        create_data = response.json()
+        self.assertEqual(create_data['code'], 201)
+        self.assertIn('clubId', create_data['data'])
+        club_id = create_data['data']['clubId']
+        print(f"   ✅ 社团创建成功: {club_id}")
+        
+        # 3. 验证创建的社团存在
+        print("   子测试3: 验证新社团存在")
+        response = self.session.get(f"{BASE_URL}/clubs?category=科技")
+        self.assertEqual(response.status_code, 200)
+        all_clubs = response.json()['data']['clubs']
+        created_club = next((c for c in all_clubs if c['clubId'] == club_id), None)
+        self.assertIsNotNone(created_club)
+        self.assertEqual(created_club['name'], "测试社团-人工智能")
+        print("   ✅ 新社团已存在于列表中")
+        
+        # 4. 测试创建重复名称社团（应该失败）
+        print("   子测试4: 重复名称创建校验")
+        response = self.session.post(
+            f"{BASE_URL}/clubs",
+            headers=auth_headers,
+            data=json.dumps(club_data)  # 复用相同名称
+        )
+        self.assertEqual(response.status_code, 400)
+        print("   ✅ 重复名称创建被正确拒绝")
+        
+        return club_id
+
 
 def run_comprehensive_tests():
     """运行全面测试"""
@@ -419,7 +479,8 @@ def run_comprehensive_tests():
         'test_07_user_profile_management',
         'test_08_error_handling',
         'test_09_pagination_and_filtering',
-        'test_10_comprehensive_workflow'
+        'test_10_comprehensive_workflow',
+        'test_11_club_management'
     ]
     
     for method in test_methods:
