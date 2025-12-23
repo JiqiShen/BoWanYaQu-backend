@@ -1,29 +1,8 @@
 from flask import Blueprint, request, jsonify
 from middleware.auth import generate_token
-import hashlib
-import uuid
-from datetime import datetime
+from models import db, User
 
 auth_bp = Blueprint('auth', __name__)
-
-# 模拟用户数据存储（实际应该用数据库）
-users_db = {
-    'user_001': {
-        'user_id': 1,
-        'username': 'testuser',
-        'student_id': 20210001,
-        'password_hash': hashlib.sha256('password123'.encode()).hexdigest(),  # 密码: password123
-        'email': 'test@example.com',
-        'phone': '13800138000',
-        'college': '计算机学院',
-        'major': '计算机科学与技术',
-        'grade': '大三',
-        'created_at': '2024-01-01T00:00:00Z'
-    }
-}
-
-# 学生证号到用户ID的映射
-student_id_to_user = {20210001: 'user_001'}
 
 @auth_bp.route('/auth/register', methods=['POST'])
 def register():
@@ -39,57 +18,49 @@ def register():
         }), 400
     
     # 检查用户名是否已存在
-    for user in users_db.values():
-        if user['username'] == data['username']:
-            return jsonify({
-                "code": 400,
-                "message": "用户名已存在"
-            }), 400
+    if User.query.filter_by(username=data['username']).first():
+        return jsonify({
+            "code": 400,
+            "message": "用户名已存在"
+        }), 400
         
     # 检查学生证是否已注册
-    if data['student_id'] in student_id_to_user:
+    if User.query.filter_by(student_id=data['student_id']).first():
         return jsonify({
             "code": 400,
             "message": "该学号已注册"
         }), 400
     
     try:
-        # 生成用户ID
-        user_id = f"user_{len(users_db) + 1:03d}"
-        user_db_id = len(users_db) + 1
+        # 创建用户
+        user = User(
+            username=data['username'],
+            student_id=data['student_id'],
+            email=data.get('email', ''),
+            phone=data.get('phone', ''),
+            college=data.get('college', ''),
+            major=data.get('major', ''),
+            grade=data.get('grade', '')
+        )
+        user.set_password(data['password'])
         
-        # 创建用户对象
-        user = {
-            'user_id': user_db_id,
-            'username': data['username'],
-            'student_id': data['student_id'],
-            'password_hash': hashlib.sha256(data['password'].encode()).hexdigest(),
-            'email': data.get('email', ''),
-            'phone': data.get('phone', ''),
-            'college': data.get('college', ''),
-            'major': data.get('major', ''),
-            'grade': data.get('grade', ''),
-            'created_at': datetime.utcnow().isoformat() + 'Z',
-            'role': 'student'  # 默认角色为学生
-        }
-        
-        # 存储用户
-        users_db[user_id] = user
-        student_id_to_user[data['student_id']] = user_id
+        db.session.add(user)
+        db.session.commit()
         
         # 生成token
-        token = generate_token(str(user_db_id), user['role'])
+        token = generate_token(str(user.id), user.role)
         
         return jsonify({
             "code": 200,
             "message": "注册成功",
             "data": {
-                "user_id": user_db_id,
+                "user_id": user.id,
                 "token": token
             }
         }), 201
         
     except Exception as e:
+        db.session.rollback()
         return jsonify({
             "code": 500,
             "message": f"注册失败: {str(e)}"
@@ -108,11 +79,7 @@ def login():
         }), 400
     
     # 查找用户
-    user = None
-    for user_data in users_db.values():
-        if user_data['username'] == data['username']:
-            user = user_data
-            break
+    user = User.query.filter_by(username=data['username']).first()
     
     if not user:
         return jsonify({
@@ -121,23 +88,22 @@ def login():
         }), 401
     
     # 验证密码
-    password_hash = hashlib.sha256(data['password'].encode()).hexdigest()
-    if password_hash != user['password_hash']:
+    if not user.check_password(data['password']):
         return jsonify({
             "code": 401,
             "message": "用户名或密码错误"
         }), 401
     
     # 生成token
-    token = generate_token(str(user['user_id']), user['role'])
+    token = generate_token(str(user.id), user.role)
     
     return jsonify({
         "code": 200,
         "message": "登录成功",
         "data": {
-            "user_id": user['user_id'],
-            "username": user['username'],
-            "student_id": user['student_id'],
+            "user_id": user.id,
+            "username": user.username,
+            "student_id": user.student_id,
             "token": token
         }
     })
@@ -157,26 +123,40 @@ def wechat_login():
     try:
         # 模拟用户数据
         openid = f"mock_openid_{code}"
-        user_info = {
-            'userId': f"user_{openid[-8:]}",
-            'name': f"用户{openid[-6:]}",
-            'avatar': "https://avatar.url/default.png",
-            'role': 'student'
-        }
+        
+        # 检查是否已有该微信用户
+        user = User.query.filter_by(username=f"wechat_{openid[-8:]}").first()
+        if not user:
+            # 创建新用户
+            user = User(
+                username=f"wechat_{openid[-8:]}",
+                student_id=int(f"2024{int(openid[-6:]) % 10000:04d}"),
+                name=f"微信用户{openid[-6:]}",
+                role='student'
+            )
+            user.set_password(openid)  # 使用openid作为密码
+            db.session.add(user)
+            db.session.commit()
         
         # 生成token
-        token = generate_token(user_info['userId'], user_info['role'])
+        token = generate_token(str(user.id), user.role)
         
         return jsonify({
             "code": 200,
             "message": "登录成功",
             "data": {
                 "token": token,
-                "userInfo": user_info
+                "userInfo": {
+                    'userId': user.id,
+                    'name': user.username,
+                    'avatar': user.avatar or 'https://avatar.url/default.png',
+                    'role': user.role
+                }
             }
         })
         
     except Exception as e:
+        db.session.rollback()
         return jsonify({
             "code": 500,
             "message": f"登录失败: {str(e)}"
@@ -184,9 +164,9 @@ def wechat_login():
 
 @auth_bp.route('/auth/refresh', methods=['POST'])
 def refresh_token():
-    """刷新Token（需要重构以使用新token系统）"""
+    """刷新Token"""
     # 在实际应用中需要验证refresh token
-    # 这里简化处理
+    # 这里简化处理，重新生成token
     from flask import g
     if not hasattr(g, 'user_id'):
         return jsonify({
@@ -194,11 +174,14 @@ def refresh_token():
             "message": "未授权"
         }), 401
         
-    # 获取用户角色
-    user = users_db.get(f"user_{g.user_id:03d}")
-    role = user['role'] if user else 'student'
+    user = User.query.get(int(g.user_id))
+    if not user:
+        return jsonify({
+            "code": 404,
+            "message": "用户不存在"
+        }), 404
     
-    token = generate_token(str(g.user_id), role)
+    token = generate_token(str(user.id), user.role)
     
     return jsonify({
         "code": 200,
