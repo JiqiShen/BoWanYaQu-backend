@@ -1,56 +1,97 @@
 from flask import Blueprint, request, jsonify, g
 from middleware.auth import token_required
+from models import db, Activity, Club, Registration
+from datetime import datetime
+import time
 
 activity_bp = Blueprint('activity', __name__)
 
-# 模拟数据存储
-activities_db = {
-    'act_001': {
-        'activityId': 'act_001',
-        'title': '算法竞赛培训',
-        'description': '每周算法竞赛培训活动',
-        'startTime': '2024-01-15T19:00:00Z',
-        'endTime': '2024-01-15T21:00:00Z',
-        'location': '理科楼 301',
-        'maxParticipants': 100,
-        'currentParticipants': 78,
-        'status': 'published',
-        'clubInfo': {
-            'clubId': 'club_001',
-            'name': 'ACM 算法协会'
-        },
-        'tags': ['算法', '竞赛', '培训']
-    }
-}
+@activity_bp.route('/activities/latest', methods=['GET'])
+def get_latest_activities():
+    """获取最新活动"""
+    try:
+        limit = int(request.args.get('limit', 10))
+        
+        # 获取最新活动
+        activities = Activity.query\
+            .filter_by(status='published')\
+            .order_by(Activity.created_at.desc())\
+            .limit(limit)\
+            .all()
+        
+        # 格式化返回数据
+        formatted_activities = []
+        for activity in activities:
+            formatted_activities.append({
+                'activity_id': activity.id,
+                'title': activity.title,
+                'club_name': activity.club.name if activity.club else '',
+                'tag': activity.tags.split(',')[0] if activity.tags else '',
+                'participant_count': Registration.query.filter_by(activity_id=activity.id, status='approved').count(),
+                'max_participants': activity.max_participants
+            })
+        
+        return jsonify({
+            "code": 200,
+            "data": {
+                "activities": formatted_activities
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "code": 500,
+            "message": f"获取最新活动失败: {str(e)}"
+        }), 500
 
 @activity_bp.route('/activities', methods=['GET'])
 def get_activities():
     """获取活动列表"""
     try:
         page = int(request.args.get('page', 1))
-        limit = int(request.args.get('limit', 15))
-        status = request.args.get('status', 'published')
-        category = request.args.get('category')
+        limit = int(request.args.get('limit', 10))
+        status = request.args.get('status')  # upcoming, ongoing, ended
+        tag = request.args.get('tag', '')
+        club_id = request.args.get('club_id', '')
         
-        # 过滤活动
-        filtered_activities = []
-        for activity in activities_db.values():
-            if status and activity.get('status') != status:
-                continue
-            if category and activity.get('category') != category:
-                continue
-            filtered_activities.append(activity)
+        # 构建查询
+        query = Activity.query.filter_by(status='published')
+        
+        # 状态筛选
+        current_time = datetime.utcnow()
+        if status == 'upcoming':
+            query = query.filter(Activity.start_time > current_time)
+        elif status == 'ongoing':
+            query = query.filter(Activity.start_time <= current_time, Activity.end_time >= current_time)
+        elif status == 'ended':
+            query = query.filter(Activity.end_time < current_time)
+        
+        # 标签筛选
+        if tag:
+            query = query.filter(Activity.tags.like(f'%{tag}%'))
+        
+        # 社团筛选
+        if club_id:
+            query = query.filter_by(club_id=club_id)
+        
+        # 获取总数
+        total = query.count()
         
         # 分页
-        start_idx = (page - 1) * limit
-        end_idx = start_idx + limit
-        paged_activities = filtered_activities[start_idx:end_idx]
+        activities = query.order_by(Activity.start_time.asc())\
+                         .offset((page - 1) * limit)\
+                         .limit(limit)\
+                         .all()
+        
+        # 转换为字典
+        user_id = int(g.user_id) if hasattr(g, 'user_id') else None
+        activities_data = [activity.to_dict(user_id=user_id) for activity in activities]
         
         return jsonify({
             "code": 200,
             "data": {
-                "activities": paged_activities,
-                "total": len(filtered_activities),
+                "activities": activities_data,
+                "total": total,
                 "page": page,
                 "limit": limit
             }
@@ -68,79 +109,144 @@ def create_activity():
     """创建活动"""
     data = request.get_json()
     
+    if not data:
+        return jsonify({
+            "code": 400,
+            "message": "请求体必须为JSON格式"
+        }), 400
+    
     # 验证必要字段
     required_fields = ['title', 'startTime', 'location']
     if not all(field in data for field in required_fields):
         return jsonify({
             "code": 400,
-            "message": "缺少必要字段"
+            "message": "缺少必要字段：title, startTime, location"
         }), 400
     
     try:
-        # 生成活动ID
-        activity_id = f"act_{len(activities_db) + 1:03d}"
+        # 解析时间
+        start_time = datetime.fromisoformat(data['startTime'].replace('Z', '+00:00'))
+        end_time = datetime.fromisoformat(data['endTime'].replace('Z', '+00:00')) if data.get('endTime') else None
+        registration_end_time = datetime.fromisoformat(data['registration_end_time'].replace('Z', '+00:00')) if data.get('registration_end_time') else None
         
-        # 创建活动对象
-        activity = {
-            'activityId': activity_id,
-            'title': data['title'],
-            'description': data.get('description', ''),
-            'startTime': data['startTime'],
-            'endTime': data.get('endTime'),
-            'location': data['location'],
-            'maxParticipants': data.get('maxParticipants', 0),
-            'currentParticipants': 0,
-            'status': 'published',
-            'clubInfo': {
-                'clubId': data.get('clubId', 'club_001'),
-                'name': data.get('clubName', '默认社团')
-            },
-            'tags': data.get('tags', []),
-            'creatorId': g.user_id
-        }
+        # 创建活动
+        activity = Activity(
+            title=data['title'],
+            description=data.get('description', ''),
+            start_time=start_time,
+            end_time=end_time,
+            location=data['location'],
+            max_participants=data.get('maxParticipants', 0),
+            registration_end_time=registration_end_time,
+            contact_info=data.get('contact_info', ''),
+            tags=','.join(data.get('tags', [])) if isinstance(data.get('tags'), list) else data.get('tags', ''),
+            club_id=data.get('club_id', 1),
+            creator_id=int(g.user_id)
+        )
         
-        activities_db[activity_id] = activity
+        db.session.add(activity)
+        db.session.commit()
         
         return jsonify({
-            "code": 201,
+            "code": 200,
             "message": "活动创建成功",
-            "data": activity
+            "data": {
+                "activity_id": activity.id,
+                "activityId": f"act_{activity.id:03d}"
+            }
         }), 201
         
     except Exception as e:
+        db.session.rollback()
         return jsonify({
             "code": 500,
-            "message": f"Fail to create activity: {str(e)}"
+            "message": f"创建活动失败: {str(e)}"
         }), 500
 
 @activity_bp.route('/activities/<activity_id>', methods=['GET'])
 def get_activity_detail(activity_id):
     """获取活动详情"""
-    activity = activities_db.get(activity_id)
-    
-    if not activity:
+    try:
+        # 尝试按ID查找
+        if activity_id.isdigit():
+            activity = Activity.query.get(int(activity_id))
+        else:
+            # 尝试解析act_xxx格式
+            if activity_id.startswith('act_'):
+                act_id = int(activity_id.split('_')[1])
+                activity = Activity.query.get(act_id)
+            else:
+                activity = None
+        
+        if not activity:
+            return jsonify({
+                "code": 404,
+                "message": "活动不存在"
+            }), 404
+        
+        # 获取用户ID（如果有认证）
+        user_id = None
+        token = request.headers.get('Authorization')
+        if token and token.startswith('Bearer '):
+            try:
+                token = token[7:]
+                from middleware.auth import Config
+                import jwt
+                data = jwt.decode(token, Config.SECRET_KEY, algorithms=["HS256"])
+                user_id = int(data['user_id'])
+            except:
+                pass
+        
+        activity_detail = activity.to_dict(user_id=user_id)
+        
         return jsonify({
-            "code": 404,
-            "message": "活动不存在"
-        }), 404
-    
-    # 检查用户是否已报名 (需要认证)
-    is_registered = False
-    registration_status = 'none'
-    
-    if hasattr(g, 'user_id'):
-        # 在实际应用中查询数据库
-        is_registered = True  # 模拟数据
-        registration_status = 'confirmed'
-    
-    activity_detail = activity.copy()
-    activity_detail.update({
-        'isRegistered': is_registered,
-        'registrationStatus': registration_status,
-        'canRegister': activity['currentParticipants'] < activity['maxParticipants']
-    })
-    
-    return jsonify({
-        "code": 200,
-        "data": activity_detail
-    })
+            "code": 200,
+            "data": activity_detail
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "code": 500,
+            "message": f"获取活动详情失败: {str(e)}"
+        }), 500
+
+@activity_bp.route('/user/registered-activities', methods=['GET'])
+@token_required
+def get_registered_activities():
+    """获取报名成功的活动"""
+    try:
+        user_id = int(g.user_id)
+        
+        # 获取用户已批准报名的活动
+        registrations = Registration.query.filter_by(user_id=user_id, status='approved').all()
+        
+        registered_activities = []
+        for registration in registrations:
+            activity = registration.activity
+            if activity:
+                registered_activities.append({
+                    'activity_id': activity.id,
+                    'title': activity.title,
+                    'start_time': activity.start_time.isoformat() + 'Z' if activity.start_time else None,
+                    'end_time': activity.end_time.isoformat() + 'Z' if activity.end_time else None,
+                    'location': activity.location,
+                    'club_name': activity.club.name if activity.club else '',
+                    'participant_count': Registration.query.filter_by(activity_id=activity.id, status='approved').count(),
+                    'max_participants': activity.max_participants,
+                    'status': activity.status,
+                    'is_registered': True
+                })
+        
+        return jsonify({
+            "code": 200,
+            "data": {
+                "activities": registered_activities,
+                "total": len(registered_activities)
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "code": 500,
+            "message": f"获取报名活动失败: {str(e)}"
+        }), 500

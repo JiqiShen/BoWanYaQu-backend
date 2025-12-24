@@ -4,17 +4,17 @@ from datetime import timedelta
 class Config:
     # 基础配置
     BASE_API_URL = "http://localhost:1234/v1"
-    WECHAT_APP_ID = os.getenv('WECHAT_APP_ID', 'wx1234567890abcdef')
-    WECHAT_APP_SECRET = os.getenv('WECHAT_APP_SECRET', 'your_app_secret')
     JSON_AS_ASCII = False
     
     # JWT配置
     SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-change-this')
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=24)
     
-    # 数据库配置 (使用SQLite示例)
-    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL', 'sqlite:///club_activities.db')
+    # 数据库配置
+    BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL', f'sqlite:///{os.path.join(BASE_DIR, "club_activities.db")}')
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_ECHO = False  # 设置为True可以查看SQL语句
     
     # 错误码
     ERROR_CODES = {
@@ -31,5 +31,14 @@ class Config:
         1002: "活动已结束", 
         1003: "活动名额已满",
         1004: "您已报名该活动",
-        1005: "报名时间已截止"
+        1005: "报名时间已截止",
+        1006: "用户名已存在",
+        1007: "学号已注册",
+        1008: "用户名或密码错误",
+        1009: "已关注该社团",
+        1010: "未关注该社团",
+        1011: "社团不存在",
+        1012: "用户不存在",
+        1013: "报名记录不存在",
+        1014: "权限不足，只有社团管理员可以执行此操作"
     }
