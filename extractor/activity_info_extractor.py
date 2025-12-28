@@ -9,7 +9,7 @@ class ActivityInfoExtractor:
         """使用百炼大模型提取活动信息"""
 
         prompt = f"""
-        请从以下微信公众号文章内容中提取活动信息，并以JSON格式返回：
+        请从以下微信公众号文章内容中提取活动信息并生成三个标签（用,分隔），并以JSON格式返回：
         
         文章内容：
         {article_content}
@@ -18,11 +18,8 @@ class ActivityInfoExtractor:
         1. 活动名称
         2. 活动时间（开始时间和结束时间）
         3. 活动地点
-        4. 主办方
-        5. 活动描述
-        6. 参与方式
-        7. 联系方式
-        8. 费用信息
+        4. 活动描述
+        5. 标签
         
         如果某些信息在文章中未提及，请用"未知"表示。
         
@@ -32,11 +29,8 @@ class ActivityInfoExtractor:
             "start_time": "开始时间",
             "end_time": "结束时间",
             "location": "活动地点",
-            "organizer": "主办方",
             "description": "活动描述",
-            "participation_method": "参与方式",
-            "contact_info": "联系方式",
-            "fee_info": "费用信息"
+            "tags": "标签"
         }}
         """
 
